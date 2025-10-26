@@ -12,6 +12,8 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from platon_processor import PlatonProcessor
 from dotenv import load_dotenv
+from flask import Flask
+from threading import Thread
 
 # Загружаем переменные окружения
 load_dotenv()
@@ -362,6 +364,21 @@ class PlatonTelegramBot:
         logger.info("Запуск Telegram бота...")
         self.application.run_polling()
 
+def start_flask_server():
+    """Запускает простой Flask сервер для Render"""
+    app = Flask(__name__)
+    
+    @app.route('/')
+    def home():
+        return "Platon Telegram Bot is running!"
+    
+    @app.route('/health')
+    def health():
+        return "OK", 200
+    
+    port = int(os.getenv('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
+
 def main():
     """Основная функция"""
     # Получаем токен из переменных окружения
@@ -372,6 +389,10 @@ def main():
         print("Создайте файл .env и добавьте в него:")
         print("TELEGRAM_BOT_TOKEN=ваш_токен_бота")
         return 1
+    
+    # Создаем Flask сервер в отдельном потоке
+    flask_thread = Thread(target=start_flask_server, daemon=True)
+    flask_thread.start()
     
     # Создаем и запускаем бота
     bot = PlatonTelegramBot(token)
