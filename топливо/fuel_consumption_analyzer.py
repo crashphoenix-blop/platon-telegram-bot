@@ -333,15 +333,30 @@ class FuelConsumptionAnalyzer:
                 )
                 
                 if matched_refuel:
+                    # Рассчитываем пробег с предыдущей заправки
+                    prev_refuels = results[vehicle_number] if vehicle_number in results else []
+                    prev_odometer = prev_refuels[-1]['odometer'] if prev_refuels and 'odometer' in prev_refuels[-1] else None
+                    
+                    # Пробег между заправками
+                    odometer = matched_refuel['Пробег']
+                    probeg = odometer - prev_odometer if prev_odometer else 0
+                    
+                    # Расчет расхода топлива
+                    consumption = round((krassula_refuel['liters'] / probeg * 100) if probeg > 0 else 0, 2)
+                    
                     # Заправка найдена в обеих системах
                     result = {
                         'date': krassula_refuel['datetime'],
                         'krassula_liters': krassula_refuel['liters'],
                         'glonass_liters': matched_refuel['Заправлено'],
                         'difference': krassula_refuel['liters'] - matched_refuel['Заправлено'],
-                        'odometer': matched_refuel['Пробег'],
+                        'odometer': odometer,
+                        'probeg': probeg,
+                        'consumption': consumption,
+                        'final_fuel_level': matched_refuel.get('Кон. уровень топлива', ''),
                         'status': 'matched',
-                        'azs': krassula_refuel['azs']
+                        'azs': krassula_refuel['azs'],
+                        'card_number': krassula_refuel['card_number']
                     }
                 else:
                     # Заправка только в Крассуле
@@ -352,7 +367,8 @@ class FuelConsumptionAnalyzer:
                         'difference': None,
                         'odometer': None,
                         'status': 'krassula_only',
-                        'azs': krassula_refuel['azs']
+                        'azs': krassula_refuel['azs'],
+                        'card_number': krassula_refuel['card_number']
                     }
                     
                     self.notifications.append({
@@ -393,14 +409,17 @@ class FuelConsumptionAnalyzer:
         logger.info(f"Сопоставление завершено для {len(results)} автомобилей")
         return results
     
-    def _extract_card_number(self, comment: str) -> Optional[str]:
-        """Извлекает номер карты из комментария"""
-        if pd.isna(comment):
+    def _extract_card_number(self, card_str: str) -> Optional[str]:
+        """Извлекает последние 4 цифры из номера карты"""
+        if pd.isna(card_str):
             return None
         
-        # Ищем последние 4 цифры в комментарии
-        numbers = re.findall(r'\d{4}', comment)
-        return numbers[-1] if numbers else None
+        # Преобразуем в строку и берем последние 4 символа
+        card_str = str(card_str).strip()
+        if len(card_str) >= 4:
+            return card_str[-4:]
+        
+        return None
     
     def _find_matching_refuel(self, krassula_refuel: Dict, glonass_refuels: pd.DataFrame) -> Optional[Dict]:
         """
@@ -495,7 +514,8 @@ class FuelConsumptionAnalyzer:
     
     def generate_excel_report(self, output_path: str) -> bool:
         """
-        Генерирует итоговый Excel отчет
+        Генерирует итоговый Excel отчет с отдельными листами для каждой машины
+        Каждый лист содержит разбивку по месяцам с итоговыми данными
         
         Args:
             output_path: Путь для сохранения отчета
@@ -507,32 +527,101 @@ class FuelConsumptionAnalyzer:
             logger.info(f"Создаем Excel отчет: {output_path}")
             
             with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-                # Основной лист с результатами
-                main_data = []
+                # Создаем отдельный лист для каждой машины
                 for vehicle_number, refuels in self.results.items():
-                    for refuel in refuels:
-                        main_data.append({
-                            'Автомобиль': vehicle_number,
-                            'Дата': refuel['date'],
-                            'Литры (Крассула)': refuel['krassula_liters'],
-                            'Литры (ГЛОНАСС)': refuel['glonass_liters'],
-                            'Погрешность': refuel['difference'],
-                            'Пробег': refuel['odometer'],
-                            'Статус': refuel['status'],
-                            'АЗС': refuel['azs']
-                        })
-                
-                if main_data:
-                    main_df = pd.DataFrame(main_data)
-                    main_df.to_excel(writer, sheet_name='Основные данные', index=False)
+                    if not refuels:
+                        continue
+                    
+                    # Сортируем заправки по дате
+                    refuels_sorted = sorted(refuels, key=lambda x: x['date'])
+                    
+                    # Группируем по месяцам
+                    monthly_data = {}
+                    for refuel in refuels_sorted:
+                        date = refuel['date']
+                        month_key = (date.year, date.month)
+                        
+                        if month_key not in monthly_data:
+                            monthly_data[month_key] = []
+                        monthly_data[month_key].append(refuel)
+                    
+                    # Создаем данные для листа
+                    sheet_data = []
+                    
+                    for (year, month), refuels_month in sorted(monthly_data.items()):
+                        # Заголовок месяца
+                        month_name = self._get_month_name(month).upper()
+                        sheet_data.append([None, month_name, None, None, None, None, None, None, None, None, None, None, None, None, None, None])
+                        
+                        # Первая заправка в месяце - заголовки
+                        if refuels_month:
+                            sheet_data.append([None, f"{year}", None, None, None, None, None, None, None, None, None, None, None, None, None, None])
+                            sheet_data.append([None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None])
+                        
+                        # Данные по заправкам
+                        total_probeg = 0
+                        total_system_liters = 0
+                        
+                        for i, refuel in enumerate(refuels_month):
+                            date = refuel['date']
+                            date_str = date.strftime('%Y-%m-%d %H:%M:%S') if pd.notna(date) else ''
+                            
+                            # Пробег между заправками
+                            probeg = refuel.get('odometer', 0) - (refuels_month[i-1].get('odometer', 0) if i > 0 else refuel.get('odometer', 0))
+                            
+                            # Данные строки
+                            row_data = [
+                                refuel.get('card_number', ''),  # № карты
+                                date_str,  # Дата
+                                '',  # маршрут (пусто)
+                                '',  # Водитель (пусто)
+                                refuel.get('odometer', ''),  # Одометр
+                                probeg if i > 0 else '',  # Пробег
+                                refuel.get('final_fuel_level', ''),  # Бак
+                                refuel.get('glonass_liters', ''),  # Датчик (ГЛОНАСС)
+                                refuel.get('krassula_liters', ''),  # Заправка в системе
+                                refuel.get('difference', ''),  # Погрешность
+                                refuel.get('consumption', ''),  # Расход
+                                None, None, None, None, None  # Unnamed колонки
+                            ]
+                            sheet_data.append(row_data)
+                            
+                            total_probeg += probeg if i > 0 else 0
+                            total_system_liters += refuel.get('krassula_liters', 0) if pd.notna(refuel.get('krassula_liters')) else 0
+                        
+                        # Итоговая строка за месяц
+                        if refuels_month and total_system_liters > 0:
+                            avg_consumption = round((total_system_liters / total_probeg * 100) if total_probeg > 0 else 0, 2)
+                            
+                            # Заголовок итоговой таблицы
+                            sheet_data.append([None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None])
+                            sheet_data.append([None, None, None, None, None, None, None, None, None, None, None, 'пробег', 'система', 'расход', 'перерасход (л)', 'норма расхода'])
+                            
+                            # Данные итоговой таблицы
+                            month_num = month
+                            year_short = str(year)[-2:]
+                            sheet_data.append([None, f'тотал {month_name} {year_short}', None, None, None, None, None, None, None, None, None, None, None, None, None, None])
+                            sheet_data.append([None, None, None, None, None, None, None, None, None, None, None, total_probeg, total_system_liters, avg_consumption, None, 31])  # 31 - норма расхода (заполняется вручную)
+                    
+                    # Создаем DataFrame для листа
+                    df = pd.DataFrame(sheet_data)
+                    df.to_excel(writer, sheet_name=str(vehicle_number), index=False, header=False)
                 
                 # Лист с уведомлениями
                 if self.notifications:
-                    notifications_df = pd.DataFrame(self.notifications)
+                    notifications_data = []
+                    for notif in self.notifications:
+                        notifications_data.append({
+                            'Тип': notif['type'].upper(),
+                            'Автомобиль': notif.get('vehicle', ''),
+                            'Дата': notif.get('date', ''),
+                            'Сообщение': notif.get('message', '')
+                        })
+                    notifications_df = pd.DataFrame(notifications_data)
                     notifications_df.to_excel(writer, sheet_name='Уведомления', index=False)
                 
                 # Лист со сливами
-                if not self.glonass_drain_data.empty:
+                if not self.glonass_drain_data.empty and hasattr(self.glonass_drain_data, 'columns'):
                     self.glonass_drain_data.to_excel(writer, sheet_name='Сливы', index=False)
             
             logger.info("Excel отчет успешно создан")
@@ -540,7 +629,15 @@ class FuelConsumptionAnalyzer:
             
         except Exception as e:
             logger.error(f"Ошибка при создании Excel отчета: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False
+    
+    def _get_month_name(self, month: int) -> str:
+        """Возвращает название месяца на русском языке"""
+        months = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь',
+                  'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь']
+        return months[month - 1] if 1 <= month <= 12 else ''
     
     def print_notifications(self):
         """Выводит уведомления в консоль"""

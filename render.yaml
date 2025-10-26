@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: platon-telegram-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python telegram_bot.py
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+    healthCheckPath: /health
+    
+# Cron job для пинга каждые 5 минут
+crons:
+  - name: keep-bot-alive
+    schedule: "*/5 * * * *"
+    url: https://ваш-сервис.onrender.com/ping

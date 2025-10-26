@@ -376,6 +376,11 @@ def start_flask_server():
     def health():
         return "OK", 200
     
+    # Добавляем endpoint для пинга, чтобы держать сервис активным
+    @app.route('/ping')
+    def ping():
+        return "pong", 200
+    
     port = int(os.getenv('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
 
